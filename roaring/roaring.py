@@ -47,6 +47,7 @@ HEADER_BASE_SIZE = 8
 ARRAY_MAX_SIZE = 4096
 BITMAP_N = (1 << 16) // 64
 
+
 class Bitmap(object):
 
     __slots__ = "containers"
