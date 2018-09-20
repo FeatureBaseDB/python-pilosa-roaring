@@ -1,0 +1,7 @@
+build/
+dist/
+.eggs/
+*.pyc
+__pycache__
+.coverage
+.pytest_cache/
