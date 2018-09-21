@@ -37,6 +37,7 @@ __all__ = "Bitmap"
 
 import array
 import bisect
+import copy
 import io
 import struct
 
@@ -46,6 +47,7 @@ COOKIE = MAGIC_NUMBER + (STORAGE_VERSION << 16)
 HEADER_BASE_SIZE = 8
 ARRAY_MAX_SIZE = 4096
 BITMAP_N = (1 << 16) // 64
+RUN_MAX_SIZE = 2048
 
 
 class Bitmap(object):
@@ -59,24 +61,32 @@ class Bitmap(object):
         container = self.containers.get_or_create(bit >> 16)
         container.add(bit & 0xFFFF)
 
-    def iterate(self):
-        return self.containers.iterate()
+    def __iter__(self):
+        return self.containers.__iter__()
 
-    def write_to(self, writer):
-        return self.containers.write_to(writer)
+    def write_to(self, writer, optimize=True):
+        return self.containers.write_to(writer, optimize)
 
 
 class Container(object):
 
-    __slots__ = "array", "bitmap", "type", "n"
+    __slots__ = "array", "bitmap", "runs", "type", "n"
 
     TYPE_ARRAY = 1
     TYPE_BITMAP = 2
+    TYPE_RLE = 3
+
+    SERIALIZATION_COST_MAP = {
+        TYPE_ARRAY: lambda c: 8 * len(c.array),
+        TYPE_BITMAP: lambda c: 8 * len([x for x in c.bitmap if x]),
+        TYPE_RLE: lambda c: 16 * len(c.runs) + 2,
+    }
 
     def __init__(self):
         self.type = self.TYPE_ARRAY
         self.array = []
         self.bitmap = []
+        self.runs = []
         self.n = 0
 
     def add(self, bit):
@@ -96,22 +106,7 @@ class Container(object):
         self.n += 1
         bisect.insort_left(self.array, bit)
 
-    def _convert_to_bitmap(self):
-        self.type = self.TYPE_BITMAP
-        bitmap = [0] * BITMAP_N
-        for bit in self.array:
-            bitmap[bit // 64] |= 1 << (bit % 64)
-        self.bitmap = bitmap
-        self.n = len(self.array)
-        self.array = []
-
-    def _bitmap_add(self, bit):
-        if (self.bitmap[bit // 64] & (1 << (bit % 64))):
-            return
-        self.n += 1
-        self.bitmap[bit // 64] |= (1 << (bit % 64))
-
-    def iterate(self):
+    def __iter__(self):
         if self.type == self.TYPE_ARRAY:
             for bit in self.array:
                 yield bit
@@ -124,16 +119,56 @@ class Container(object):
                     v = 2**i
                     if value & v == v:
                         yield key * 64 + i
+        elif self.type == self.TYPE_RLE:
+            try:
+                arange = xrange
+            except NameError:
+                # Python 3
+                arange = range
+            for start, last in self.runs:
+                for bit in arange(start, last + 1):
+                    yield bit
         else:
             raise Exception("Invalid container type: " % self.type)
+
+    def _copy(self):
+        return copy.copy(self)
+
+    def _convert_to_bitmap(self):
+        # converts from array to bitmap
+        if self.type == self.TYPE_BITMAP:
+            return
+        self.type = self.TYPE_BITMAP
+        # we can move this part to to_bitmap function to
+        # support converting from runs
+        bitmap = [0] * BITMAP_N
+        for bit in self.array:
+            bitmap[bit // 64] |= 1 << (bit % 64)
+        self.bitmap = bitmap
+        self.array = []
+
+    def _bitmap_add(self, bit):
+        if (self.bitmap[bit // 64] & (1 << (bit % 64))):
+            return
+        self.n += 1
+        self.bitmap[bit // 64] |= (1 << (bit % 64))
+
+    def _convert_to_runs(self):
+        if self.type == self.TYPE_RLE:
+            return
+        runs = to_runs(self.__iter__())
+        if len(runs) > RUN_MAX_SIZE:
+            return
+        self.runs = runs
+        self.type = self.TYPE_RLE
+        self.array = []
+        self.bitmap = []
 
     def __lt__(self, other):
         # required for Python 3
         return False
 
     def __len__(self):
-        if self.type == self.TYPE_ARRAY:
-            return len(self.array)
         return self.n
 
     def write_to(self, writer):
@@ -145,8 +180,43 @@ class Container(object):
             for i, item in enumerate(self.bitmap):
                 struct.pack_into("<Q", ba, i * 8, item)
             return writer.write(ba)
+        elif self.type == self.TYPE_RLE:
+            written = writer.write(struct.pack("<H", len(self.runs)))
+            for start, last in self.runs:
+                written += writer.write(struct.pack("<HH", start, last))
+            return written
         else:
             raise Exception("Invalid container type: " % self.type)
+
+    def _serialization_cost(self):
+        try:
+            return self.SERIALIZATION_COST_MAP[self.type](self)
+        except KeyError:
+            raise Exception("Invalid container type: " % self.type)
+
+    def _optimized(self):
+        self_copy = self._copy()
+        self_copy._convert_to_runs()
+        if self_copy._serialization_cost() < self._serialization_cost():
+            return self_copy
+        self_copy = None
+        return self
+
+
+def to_runs(gen):
+    runs = []
+    try:
+        start = last = next(gen)
+    except StopIteration:
+        return []
+    for bit in gen:
+        if bit == last + 1:
+            last = bit
+        else:
+            runs.append((start, last))
+            start = last = bit
+    runs.append((start, last))
+    return runs
 
 
 class SliceContainers(object):
@@ -182,28 +252,35 @@ class SliceContainers(object):
         self.last_container = container
         return container
 
-    def iterate(self):
+    def __iter__(self):
         for key, container in self.key_containers:
-            for bit in container.iterate():
+            for bit in container:
                 yield (key << 16) + bit
 
-    def write_to(self, writer):
-        writer.write(struct.pack("<I", COOKIE))
-        writer.write(struct.pack("<I", len(self.key_containers)))
+    def write_to(self, writer, optimize=True):
+        container_count = sum(1 for k, c in self.key_containers if len(c) > 0)
 
-        container_count = 0
-        # write meta
+        # write header
+        writer.write(struct.pack("<I", COOKIE))
+        writer.write(struct.pack("<I", container_count))
+
+        # write container meta
+        containers = []
         for key, container in self.key_containers:
-            n = len(container)
-            assert n > 0
-            container_count += 1
+            bit_count = len(container)
+            if bit_count < 1:
+                continue
+            if optimize:
+                container = container._optimized()
+            containers.append(container)
             writer.write(struct.pack("<Q", key))
             writer.write(struct.pack("<H", container.type))
-            writer.write(struct.pack("<H", n - 1))
+            writer.write(struct.pack("<H", bit_count - 1))
 
+        # write container data
         data = io.BytesIO()
         offset = HEADER_BASE_SIZE + container_count * (8 + 2 + 2 + 4)
-        for key, container in self.key_containers:
+        for container in containers:
             writer.write(struct.pack("<I", offset))
             size = container.write_to(data)
             offset += size
