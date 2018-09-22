@@ -50,24 +50,6 @@ BITMAP_N = (1 << 16) // 64
 RUN_MAX_SIZE = 2048
 
 
-class Bitmap(object):
-
-    __slots__ = "containers"
-
-    def __init__(self):
-        self.containers = SliceContainers()
-
-    def add(self, bit):
-        container = self.containers.get_or_create(bit >> 16)
-        container.add(bit & 0xFFFF)
-
-    def __iter__(self):
-        return self.containers.__iter__()
-
-    def write_to(self, writer, optimize=True):
-        return self.containers.write_to(writer, optimize)
-
-
 class Container(object):
 
     __slots__ = "array", "bitmap", "runs", "type", "n"
@@ -219,7 +201,7 @@ def to_runs(gen):
     return runs
 
 
-class SliceContainers(object):
+class Bitmap(object):
 
     __slots__ = "key_containers", "last_key", "last_container"
     _empty_container = Container()
@@ -229,28 +211,9 @@ class SliceContainers(object):
         self.last_key = 0
         self.last_container = None
 
-    def put_container(self, key, container):
-        bisect.insort(self.key_containers, (key, container))
-
-    def get_container(self, key):
-        key_containers = self.key_containers
-        index = bisect.bisect_left(key_containers, (key, self._empty_container))
-        if index != len(key_containers):
-            key2, container = key_containers[index]
-            if key == key2:
-                return container
-        return None
-
-    def get_or_create(self, key):
-        if key == self.last_key and self.last_container != None:
-            return self.last_container
-        self.last_key = key
-        container = self.get_container(key)
-        if not container:
-            container = Container()
-            self.put_container(key, container)
-        self.last_container = container
-        return container
+    def add(self, bit):
+        container = self._get_or_create(bit >> 16)
+        container.add(bit & 0xFFFF)
 
     def __iter__(self):
         for key, container in self.key_containers:
@@ -287,3 +250,26 @@ class SliceContainers(object):
 
         writer.write(data.getvalue())
         return offset
+
+    def _put_container(self, key, container):
+        bisect.insort(self.key_containers, (key, container))
+
+    def _get_container(self, key):
+        key_containers = self.key_containers
+        index = bisect.bisect_left(key_containers, (key, self._empty_container))
+        if index != len(key_containers):
+            key2, container = key_containers[index]
+            if key == key2:
+                return container
+        return None
+
+    def _get_or_create(self, key):
+        if key == self.last_key and self.last_container != None:
+            return self.last_container
+        self.last_key = key
+        container = self._get_container(key)
+        if not container:
+            container = Container()
+            self._put_container(key, container)
+        self.last_container = container
+        return container

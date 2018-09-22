@@ -37,7 +37,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.split(os.path.dirname(os.path.abspath(__file__)))[0])
-from roaring.roaring import Container, SliceContainers, Bitmap, ARRAY_MAX_SIZE
+from roaring.roaring import Container, Bitmap, ARRAY_MAX_SIZE
 
 class ContainerTestCase(unittest.TestCase):
 
@@ -108,17 +108,6 @@ class ContainerTestCase(unittest.TestCase):
         opt_c = c._optimized()
         self.assertEqual(Container.TYPE_RLE, opt_c.type)
         self.assertEqual([(0, ARRAY_MAX_SIZE - 1)], opt_c.runs)
-
-
-class SliceContainersTestCase(unittest.TestCase):
-
-    def test_put_container(self):
-        sc = SliceContainers()
-        sc.put_container(10, Container())
-        sc.put_container(2, Container())
-        sc.put_container(5, Container())
-        target = [2, 5, 10]
-        self.assertEqual(target, [k for k, _ in sc.key_containers])
 
 
 class BitmapTestCase(unittest.TestCase):
