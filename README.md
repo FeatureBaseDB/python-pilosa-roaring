@@ -2,6 +2,8 @@
 
 This library implements Roaring Bitmaps with Pilosa 64 bit extension, compatible with Pilosa Roaring Bitmap imports.
 
+The purpose of this library is supporting Roaring Bitmap imports with 64bits in the [Python client library for Pilosa](https://github.com/pilosa/python-pilosa).  Because of that, the implementation only supports adding bits and serializing bitmaps and leaves out many of the features of Roaring Bitmaps, such as removing bits and all bit operations.
+
 ```
 Copyright 2018 Pilosa Corp.
 

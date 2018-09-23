@@ -31,13 +31,14 @@
 # DAMAGE.
 #
 
-import sys
+import io
 import os
-sys.path.insert(0, os.path.split(os.path.dirname(os.path.abspath(__file__)))[0])
-
+import sys
 import unittest
 
-from roaring.roaring import Container, SliceContainers, Bitmap, ARRAY_MAX_SIZE
+sys.path.insert(0, os.path.split(os.path.dirname(os.path.abspath(__file__)))[0])
+from roaring.roaring import Container, Bitmap, ARRAY_MAX_SIZE
+
 
 class ContainerTestCase(unittest.TestCase):
 
@@ -45,31 +46,24 @@ class ContainerTestCase(unittest.TestCase):
         c = Container()
         c.add(10)
         target = [10]
-        self.assertEqual(target, list(c.iterate()))
+        self.assertEqual(target, list(c))
         c.add(42)
         target = [10, 42]
-        self.assertEqual(target, list(c.iterate()))
+        self.assertEqual(target, list(c))
         for i in range(ARRAY_MAX_SIZE + 1):
             c.add(i)
         target = list(range(ARRAY_MAX_SIZE + 1))
-        self.assertEqual(target, list(c.iterate()))
-        self.assertEqual(c.type, c.TYPE_BITMAP)
+        self.assertEqual(target, list(c))
 
-    def test_iterate_invalid_container(self):
-        c = Container()
-        c.type = 42
-        self.assertRaises(Exception, list, c.iterate)
-
-
-class SliceContainersTestCase(unittest.TestCase):
-
-    def test_put_container(self):
-        sc = SliceContainers()
-        sc.put_container(10, Container())
-        sc.put_container(2, Container())
-        sc.put_container(5, Container())
-        target = [2, 5, 10]
-        self.assertEqual(target, [k for k, _ in sc.key_containers])
+    def test_to_runs(self):
+        from roaring.roaring import to_runs
+        self.assertEqual([], to_runs(iter([])))
+        self.assertEqual([(1, 1)], to_runs(iter([1])))
+        self.assertEqual([(1, 2)], to_runs(iter([1, 2])))
+        self.assertEqual([(1, 3)], to_runs(iter([1, 2, 3])))
+        self.assertEqual([(1, 3), (5, 5)], to_runs(iter([1, 2, 3, 5])))
+        self.assertEqual([(1, 3), (5, 6)], to_runs(iter([1, 2, 3, 5, 6])))
+        self.assertEqual([(1, 3), (5, 5), (7, 7)], to_runs(iter([1, 2, 3, 5, 7])))
 
 
 class BitmapTestCase(unittest.TestCase):
@@ -80,57 +74,55 @@ class BitmapTestCase(unittest.TestCase):
         target = list(range(ARRAY_MAX_SIZE + 1))
         for i in target:
             bmp.add(i)
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
         bmp = Bitmap()
         target = list(range(2**16))
+        bmp.add(42)  # the same bit below
         for i in target:
             bmp.add(i)
-        bmp.add(42)  # add the same bit
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
         bmp = Bitmap()
         target = list(range(2**32, 2**32 + 10))
         for i in target:
             bmp.add(i)
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
         bmp = Bitmap()
         target = list(range(2**32, 2**32 + ARRAY_MAX_SIZE + 1))
         for i in target:
             bmp.add(i)
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
         bmp = Bitmap()
         target = list(range(2**64 - 1, 2**64 -1 - ARRAY_MAX_SIZE - 1, -1))
         for i in target:
             bmp.add(i)
         target = list(reversed(target))
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
-    def test_bitmap_serialize(self):
-        import io
-        bmp = Bitmap()
-        for i in range(ARRAY_MAX_SIZE):
-            bmp.add(i)
-        for i in range(2**32, 2**32 + 10):
-            bmp.add(i)
-        bmp.add(2**64 - 1)
-        bmp.add(2**64 - 2)
-        bmp.add(2**64 - 3)
+    def test_bitmap_add2(self):
+        bmp = self.get_sample_bitmap()
         target = list(range(ARRAY_MAX_SIZE))
-        target.extend(range(2**32, 2**32 + 10))
-        target.append(2**64 - 3)
-        target.append(2**64 - 2)
+        target.extend(range(2**32, 2**32 + 8193, 2))
         target.append(2**64 - 1)
-        self.assertEqual(target, list(bmp.iterate()))
+        self.assertEqual(target, list(bmp))
 
+    def test_bitmap_serialize_optimized(self):
+        bmp = self.get_sample_bitmap()
         bio = io.BytesIO()
         written = bmp.write_to(bio)
+        self.assertEqual(8256, written)
         with open("tests/fixtures/serialized.bitmap", "rb") as f:
             target = f.read()
         self.assertEqual(target, bio.getvalue())
-        self.assertEqual(8274, written)
 
-if __name__ == "__main__":
-    unittest.main()
+    def get_sample_bitmap(self):
+        bmp = Bitmap()
+        for i in range(ARRAY_MAX_SIZE):
+            bmp.add(i)
+        for i in range(2**32, 2**32 + 8193, 2):
+            bmp.add(i)
+        bmp.add(2**64 - 1)
+        return bmp
