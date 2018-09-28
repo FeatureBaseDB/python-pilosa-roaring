@@ -74,7 +74,7 @@ class Container(object):
             if not value:
                 continue
             for i in power_range:
-                v = 2**i
+                v = 1 << i
                 if value & v == v:
                     yield key * 64 + i
 
