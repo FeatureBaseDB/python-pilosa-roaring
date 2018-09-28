@@ -42,7 +42,7 @@ with open("README.md") as f:
     long_description = f.read()
 
 setup(
-    name='py-pilosa-roaring',
+    name='pilosa-roaring',
     version="0.2.0",
     description='Python library for Pilosa Roaring Bitmaps',
     long_description=long_description,
