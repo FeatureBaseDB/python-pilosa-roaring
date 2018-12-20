@@ -52,67 +52,51 @@ RUN_MAX_SIZE = 2048
 
 class Container(object):
 
-    __slots__ = "bitmap", "n"
+    __slots__ = "_bits"
 
     TYPE_ARRAY = 1
     TYPE_BITMAP = 2
     TYPE_RLE = 3
 
     def __init__(self):
-        self.bitmap = [0] * BITMAP_N
-        self.n = 0
+        self._bits = set()
 
     def add(self, bit):
-        if (self.bitmap[bit // 64] & (1 << (bit % 64))):
-            return
-        self.n += 1
-        self.bitmap[bit // 64] |= (1 << (bit % 64))
+        self._bits.add(bit)
 
     def __iter__(self):
-        power_range = range(64)
-        for key, value in enumerate(self.bitmap):
-            if not value:
-                continue
-            for i in power_range:
-                v = 2**i
-                if value & v == v:
-                    yield key * 64 + i
+        return sorted(self._bits).__iter__()
 
     def __lt__(self, other):
         # required for Python 3
         return False
 
     def __len__(self):
-        return self.n
-
-    def _optimal_serialization_type(self):
-        arr_cost = 2 * self.n
-        bitmap_cost = 8 * len(self.bitmap)
-        rc = run_count(self.__iter__())
-        if rc > RUN_MAX_SIZE:
-            return self.TYPE_ARRAY if arr_cost < bitmap_cost else self.TYPE_BITMAP
-        rle_cost = 2 + 4 * rc
-        costs = [
-            (arr_cost, self.TYPE_ARRAY),
-            (bitmap_cost, self.TYPE_BITMAP),
-            (rle_cost, self.TYPE_RLE)
-        ]
-        costs.sort()
-        _, ser_type = costs[0]
-        return ser_type
+        return self._bits.__len__()
 
     def write_to(self, writer):
-        ser_type = self._optimal_serialization_type()
+        bits = list(self.__iter__())
+        ser_type = optimal_serialization_type(bits)
         if ser_type == self.TYPE_ARRAY:
-            arr = array.array("H", self.__iter__())
+            arr = array.array("H", bits)
             return ser_type, writer.write(arr.tostring())
         elif ser_type == self.TYPE_BITMAP:
-            ba = bytearray(8 * len(self.bitmap))
-            for i, item in enumerate(self.bitmap):
-                struct.pack_into("<Q", ba, i * 8, item)
+            ba = bytearray(8 * BITMAP_N)
+            bitmap = 0
+            bitmap_index = 0
+            for bit in bits:
+                index = bit >> 6
+                if index != bitmap_index:
+                    # put the current bitmap
+                    struct.pack_into("<Q", ba, bitmap_index *8, bitmap)
+                    bitmap_index = index
+                    bitmap = 0
+                bitmap |= (1 << (bit % 64))
+            # put the current bitmap
+            struct.pack_into("<Q", ba, bitmap_index * 8, bitmap)
             return ser_type, writer.write(ba)
         elif ser_type == self.TYPE_RLE:
-            runs = to_runs(self.__iter__())
+            runs = to_runs(bits)
             written = writer.write(struct.pack("<H", len(runs)))
             for start, last in runs:
                 written += writer.write(struct.pack("<HH", start, last))
@@ -121,13 +105,30 @@ class Container(object):
             raise Exception("Invalid container type: " % ser_type)
 
 
-def to_runs(gen):
-    runs = []
-    try:
-        start = last = next(gen)
-    except StopIteration:
+def optimal_serialization_type(bits):
+    n = len(bits)
+    arr_cost = 2 * n
+    bitmap_cost = 8 * BITMAP_N
+    rc = run_count(bits)
+    if rc > RUN_MAX_SIZE:
+        return Container.TYPE_ARRAY if arr_cost < bitmap_cost else Container.TYPE_BITMAP
+    rle_cost = 2 + 4 * rc
+    costs = [
+        (arr_cost, Container.TYPE_ARRAY),
+        (bitmap_cost, Container.TYPE_BITMAP),
+        (rle_cost, Container.TYPE_RLE)
+    ]
+    costs.sort()
+    _, ser_type = costs[0]
+    return ser_type
+
+
+def to_runs(bits):
+    if len(bits) == 0:
         return []
-    for bit in gen:
+    runs = []
+    start = last = bits[0]
+    for bit in bits[1:]:
         if bit == last + 1:
             last = bit
         else:
@@ -137,13 +138,12 @@ def to_runs(gen):
     return runs
 
 
-def run_count(gen):
+def run_count(bits):
+    if len(bits) == 0:
+        return 0
     count = 0
-    try:
-        last = next(gen)
-    except StopIteration:
-        return []
-    for bit in gen:
+    last = bits[0]
+    for bit in bits[1:]:
         if bit == last + 1:
             last = bit
         else:
